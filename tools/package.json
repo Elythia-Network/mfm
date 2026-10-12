@@ -1,0 +1,14 @@
+{
+  "name": "mfm-tools",
+  "private": true,
+  "description": "Pinned mfm-js used to (re)generate testdata/ and the emoji regex of the Go parser.",
+  "type": "module",
+  "scripts": {
+    "gen-testdata": "node gen-testdata/gen.mjs",
+    "check-testdata": "node gen-testdata/gen.mjs --check"
+  },
+  "devDependencies": {
+    "@misskey-dev/emoji-data": "17.0.0",
+    "mfm-js": "0.26.0"
+  }
+}
