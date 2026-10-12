@@ -2,12 +2,152 @@ package mfm
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// testdataDir holds the fixtures generated from mfm-js by tools/gen-testdata.
+const testdataDir = "testdata"
+
+// fixtureFile is one JSON file of testdata/.
+type fixtureFile struct {
+	Generator string        `json:"generator"`
+	MfmJs     string        `json:"mfmjs"`
+	EmojiData string        `json:"emojiData"`
+	Cases     []fixtureCase `json:"cases"`
+}
+
+// fixtureCase is one parse case: mfm-js's output for input and options.
+type fixtureCase struct {
+	Name    string `json:"name"`
+	Input   string `json:"input"`
+	Options struct {
+		Parser    string `json:"parser"`
+		NestLimit *int   `json:"nestLimit"`
+	} `json:"options"`
+	Output json.RawMessage `json:"output"`
+
+	// extract.jsonの項目
+	Hashtags           []string `json:"hashtags"`
+	EmojiCodes         []string `json:"emojiCodes"`
+	CustomEmojis       []string `json:"customEmojis"`
+	CustomEmojisSimple []string `json:"customEmojisSimple"`
+}
+
+// minCases is the least number of cases each fixture file must hold, so that
+// a fixture that fails to load or comes out empty cannot pass as green.
+var minCases = map[string]int{
+	"syntax.json":        300,
+	"regression.json":    1000,
+	"nest-limit.json":    50,
+	"random.json":        3500,
+	"unicode-emoji.json": 5000,
+	"differences.json":   1,
+	"extract.json":       700,
+}
+
+// knownDifferences lists the fixture cases where this package intentionally
+// differs from mfm-js 0.26.0, with the reason. Each entry must exist and must
+// still differ; the README lists the same differences.
+var knownDifferences = map[string]string{
+	// 入れ子はGoの再帰で読むので、nestLimitをMaxNestLimit (1000)で頭打ちにする。
+	// mfm-jsは1001段の<b>を全て太字にする(既定のスタックでは溢れて投げる)
+	"differences/1ff08601427b": "nestLimit above MaxNestLimit is lowered to MaxNestLimit",
+}
+
+func loadFixture(t *testing.T, name string) fixtureFile {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join(testdataDir, name))
+	require.NoError(t, err)
+	var f fixtureFile
+	require.NoError(t, json.Unmarshal(b, &f), name)
+	// 正規表現と期待値は同じ版のmfm-js / emoji-dataから作る。どちらかを上げたら
+	// 両方を作り直す
+	require.Equal(t, emojiMfmJsVersion, f.MfmJs, "%s: regenerate testdata with tools/gen-testdata", name)
+	require.Equal(t, emojiDataVersion, f.EmojiData, "%s: regenerate testdata with tools/gen-testdata", name)
+	require.GreaterOrEqual(t, len(f.Cases), minCases[name], "%s has too few cases", name)
+	return f
+}
+
+// fixtureNames lists the parse fixtures (every file of testdata/ but
+// extract.json), failing when a file is not covered by minCases.
+func fixtureNames(t *testing.T) []string {
+	t.Helper()
+	paths, err := filepath.Glob(filepath.Join(testdataDir, "*.json"))
+	require.NoError(t, err)
+	var names []string
+	for _, p := range paths {
+		name := filepath.Base(p)
+		require.Contains(t, minCases, name, "new fixture file: add it to minCases")
+		if name != "extract.json" {
+			names = append(names, name)
+		}
+	}
+	// 一覧が空振りして何も比べずに緑にならないよう、全部があることを確かめる
+	require.Len(t, names, len(minCases)-1)
+	return names
+}
+
+// runFixture parses c.Input the way the case asks.
+func runFixture(c fixtureCase) []*Node {
+	if c.Options.Parser == "simple" {
+		return ParseSimple(c.Input)
+	}
+	if c.Options.NestLimit != nil {
+		return ParseWithNestLimit(c.Input, *c.Options.NestLimit)
+	}
+	return Parse(c.Input)
+}
+
+// normalizeJSON decodes JSON into plain values, so that trees compare
+// independently of key order and of nil versus empty slices.
+func normalizeJSON(t *testing.T, b []byte) any {
+	t.Helper()
+	var v any
+	require.NoError(t, json.Unmarshal(b, &v))
+	return v
+}
+
+// TestParse_MatchesMfmJsFixtures runs every case of testdata/ and requires
+// the tree, encoded as JSON, to equal mfm-js 0.26.0's output, except for the
+// cases listed in knownDifferences.
+func TestParse_MatchesMfmJsFixtures(t *testing.T) {
+	seenDiff := map[string]bool{}
+	total, mismatches := 0, 0
+	for _, file := range fixtureNames(t) {
+		f := loadFixture(t, file)
+		for _, c := range f.Cases {
+			total++
+			require.Contains(t, []string{"full", "simple"}, c.Options.Parser, c.Name)
+			got, err := json.Marshal(runFixture(c))
+			require.NoError(t, err)
+			want := normalizeJSON(t, c.Output)
+			equal := assert.ObjectsAreEqual(want, normalizeJSON(t, got))
+			if reason, known := knownDifferences[c.Name]; known {
+				seenDiff[c.Name] = true
+				assert.False(t, equal, "%s (%q) matches mfm-js now; remove it from knownDifferences (%s)", c.Name, c.Input, reason)
+				continue
+			}
+			if !equal {
+				mismatches++
+				assert.Equal(t, want, normalizeJSON(t, got), "%s: input %q options %+v", c.Name, c.Input, c.Options)
+				if mismatches >= 30 {
+					t.Fatalf("too many mismatches (%d of %d so far)", mismatches, total)
+				}
+			}
+		}
+	}
+	for name := range knownDifferences {
+		assert.True(t, seenDiff[name], "knownDifferences entry %s is not in testdata", name)
+	}
+	t.Logf("%d cases, %d known differences", total, len(knownDifferences))
+}
 
 // TestParse_EmptyInput checks that an empty input gives an empty, non-nil
 // slice from every entry point, which encodes as [] like mfm-js's result.
@@ -131,4 +271,19 @@ func emojiCodeNames(nodes []*Node) []string {
 		walk(n)
 	}
 	return out
+}
+
+// TestKnownDifferences_AreDocumented requires every reason of
+// knownDifferences to be non-empty and the names to be sorted into the
+// "differences/" fixture, the only file meant for them.
+func TestKnownDifferences_AreDocumented(t *testing.T) {
+	names := make([]string, 0, len(knownDifferences))
+	for name, reason := range knownDifferences {
+		assert.NotEmpty(t, reason, name)
+		names = append(names, name)
+	}
+	slices.Sort(names)
+	for _, name := range names {
+		assert.Regexp(t, `^differences/[0-9a-f]{12}$`, name)
+	}
 }

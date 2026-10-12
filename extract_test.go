@@ -7,6 +7,35 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
+// TestExtract_MatchesMfmJsFixtures compares the extraction helpers with the
+// values testdata/extract.json computed from mfm-js 0.26.0's trees:
+// mfm.extract over parse for hashtags and emoji codes, and the same with the
+// 100-code-unit limit of upstream extractCustomEmojisFromMfm over parse and
+// parseSimple.
+func TestExtract_MatchesMfmJsFixtures(t *testing.T) {
+	f := loadFixture(t, "extract.json")
+	nonEmpty := 0
+	for _, c := range f.Cases {
+		// mfm-jsは空の配列を返し、こちらはnilを返す
+		assert.Equal(t, nilIfEmpty(c.Hashtags), CollectHashtags(c.Input), "CollectHashtags(%q)", c.Input)
+		assert.Equal(t, nilIfEmpty(c.EmojiCodes), CollectEmojiCodes(c.Input), "CollectEmojiCodes(%q)", c.Input)
+		assert.Equal(t, nilIfEmpty(c.CustomEmojis), ExtractCustomEmojis(Parse(c.Input)), "ExtractCustomEmojis(Parse(%q))", c.Input)
+		assert.Equal(t, nilIfEmpty(c.CustomEmojisSimple), ExtractCustomEmojis(ParseSimple(c.Input)), "ExtractCustomEmojis(ParseSimple(%q))", c.Input)
+		if len(c.Hashtags) > 0 && len(c.EmojiCodes) > 0 {
+			nonEmpty++
+		}
+	}
+	// 何も拾わない入力ばかりで緑にならないよう、両方を含む入力の数に下限を置く
+	assert.Greater(t, nonEmpty, 5)
+}
+
+func nilIfEmpty(s []string) []string {
+	if len(s) == 0 {
+		return nil
+	}
+	return s
+}
+
 func TestCollectHashtags_Empty(t *testing.T) {
 	assert.Nil(t, CollectHashtags())
 	assert.Nil(t, CollectHashtags(""))
