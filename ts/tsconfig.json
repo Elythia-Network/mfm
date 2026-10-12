@@ -1,0 +1,22 @@
+{
+	"compilerOptions": {
+		"target": "ES2022",
+		"lib": ["ES2022"],
+		"module": "NodeNext",
+		"moduleResolution": "NodeNext",
+		"strict": true,
+		"noImplicitReturns": true,
+		"noFallthroughCasesInSwitch": true,
+		"noUnusedLocals": true,
+		"noUnusedParameters": true,
+		"isolatedModules": true,
+		"verbatimModuleSyntax": true,
+		"skipLibCheck": true,
+		"types": ["node"],
+		// テストは比べる相手のmfm-js 0.26.0を tools/ のものから読む (tools/ で npm ci が要る)
+		"paths": {
+			"mfm-js": ["../tools/node_modules/mfm-js/built/index.d.ts"]
+		}
+	},
+	"include": ["src", "test", "vitest.config.ts"]
+}

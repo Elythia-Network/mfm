@@ -1,0 +1,49 @@
+{
+	"name": "@elythia-network/mfm",
+	"version": "0.1.0",
+	"description": "An MFM (Misskey Flavored Markdown) parser with the API of mfm-js 0.26.0, in linear time and memory",
+	"license": "MIT",
+	"keywords": [
+		"mfm",
+		"misskey",
+		"parser"
+	],
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/Elythia-Network/mfm.git",
+		"directory": "ts"
+	},
+	"type": "module",
+	"main": "./built/index.js",
+	"types": "./built/index.d.ts",
+	"exports": {
+		".": {
+			"types": "./built/index.d.ts",
+			"import": "./built/index.js",
+			"default": "./built/index.js"
+		},
+		"./package.json": "./package.json"
+	},
+	"files": [
+		"built/**/*.js",
+		"built/**/*.d.ts",
+		"LICENSE",
+		"THIRD_PARTY_NOTICES"
+	],
+	"sideEffects": false,
+	"engines": {
+		"node": ">=20"
+	},
+	"scripts": {
+		"build": "node scripts/clean.mjs && tsc -p tsconfig.build.json",
+		"typecheck": "tsc -p tsconfig.json --noEmit",
+		"test": "vitest run",
+		"prepack": "npm run build && node scripts/copy-notices.mjs"
+	},
+	"devDependencies": {
+		"@types/node": "22.20.4",
+		"fast-check": "4.10.2",
+		"typescript": "6.0.3",
+		"vitest": "4.1.11"
+	}
+}
