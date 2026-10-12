@@ -15,7 +15,7 @@ below list the inputs that reach them.
 |---|---|
 | repository root | The Go parser (module `github.com/elythia-network/mfm`, package `mfm`) |
 | [`testdata/`](testdata/) | Fixtures shared by the Go parser and the TypeScript port: inputs and mfm-js 0.26.0's output for them |
-| [`ts/`](ts/) | The TypeScript port (planned, stage 2) |
+| [`ts/`](ts/) | The TypeScript port, published to npm as `@elythia-network/mfm` (see [`ts/README.md`](ts/README.md)) |
 | [`tools/`](tools/) | Generators for `testdata/` and for the Unicode emoji pattern (a separate Go module, not part of the published one) |
 
 ## Go
@@ -209,9 +209,17 @@ go test -race ./...
 go test -run '^$' -fuzz=FuzzParse -fuzztime=30s -fuzzminimizetime=5s .
 ```
 
-`ts/` holds only a README for now and ships in the Go module zip; Go cannot
-exclude a directory from the zip except by giving it its own `go.mod`, which
-stage 2 will decide on when the TypeScript sources arrive.
+`ts/` has its own `go.mod`, which keeps it out of the Go module zip. The
+TypeScript port is checked in `ts/` (the tests also read mfm-js 0.26.0 from
+`tools/node_modules`, so run `npm ci` in `tools/` first):
+
+```sh
+cd ts
+npm ci
+npm run typecheck
+npm test
+npm run build
+```
 
 The test comparing running times (`TestParse_TimeGrowsLinearly`) is skipped
 under `-race`, under `-short` and when `MFM_SKIP_TIMING` is set; the tests
