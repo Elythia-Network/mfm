@@ -12,7 +12,10 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-const generatedPath = "../../emoji_regex_gen.go"
+const (
+	generatedPath   = "../../emoji_regex_gen.go"
+	generatedTSPath = "../../ts/src/emoji-regex.gen.ts"
+)
 
 func readSnapshot(t *testing.T) regexSource {
 	t.Helper()
@@ -42,6 +45,38 @@ func TestGeneratedFileIsUpToDate(t *testing.T) {
 	assert.True(t, bytes.Equal(want, got), "%s is stale; run `go run ./emojiregex` in tools/", generatedPath)
 	assert.Contains(t, string(got), `const emojiDataVersion = "`+src.version+`"`)
 	assert.Contains(t, string(got), `const emojiMfmJsVersion = "`+src.mfmjs+`"`)
+
+	wantTS, err := generateTS(src)
+	require.NoError(t, err)
+	gotTS, err := os.ReadFile(generatedTSPath)
+	require.NoError(t, err)
+	assert.True(t, bytes.Equal(wantTS, gotTS), "%s is stale; run `go run ./emojiregex` in tools/", generatedTSPath)
+	assert.Contains(t, string(gotTS), `export const emojiDataVersion = '`+src.version+`';`)
+	assert.Contains(t, string(gotTS), `export const emojiMfmJsVersion = '`+src.mfmjs+`';`)
+}
+
+// TestGenerateTS checks the TypeScript module on a small regex: the source is
+// kept as it is (escaped for a string literal), and the first code units map
+// astral code points to their high surrogates.
+func TestGenerateTS(t *testing.T) {
+	src := readSnapshot(t)
+	src.source = `(?:\ud83d\ude00|\ud83c[\udffb-\udfff])|[#*0-9]\ufe0f?\u20e3|\u00a9|'|` + "\u00ae" + `|\u263a(?!\ufe0e)|` + strings.Repeat(`a|`, 300) + `b`
+	got, err := generateTS(src)
+	require.NoError(t, err)
+	s := string(got)
+	// 直接書かれた非ASCIIの文字(U+00AE)はJavaScriptのエスケープにする
+	assert.Contains(t, s, `export const emojiRegex = new RegExp('(?:\\ud83d\\ude00|\\ud83c[\\udffb-\\udfff])|[#*0-9]\\ufe0f?\\u20e3|\\u00a9|\'|\u00ae|\\u263a(?!\\ufe0e)|a|`)
+	assert.Contains(t, s, "export const emojiFirstUnits: readonly number[] = [\n\t0x0023, 0x0023,\n\t0x0027, 0x0027,\n\t0x002a, 0x002a,\n\t0x0030, 0x0039,\n\t0x0061, 0x0062,\n\t0x00a9, 0x00a9,\n\t0x00ae, 0x00ae,\n\t0x263a, 0x263a,\n\t0xd83c, 0xd83d,\n];\n")
+
+	assert.Equal(t, `'a\u00e9\u3042\ud83d\ude00\'\\\u000a'`, jsQuote("aé\u3042\U0001F600'\\\n"))
+	assert.Equal(t, []charRange{{'a', 'a'}, {0xd83c, 0xd83d}}, firstUnits([]charRange{{'a', 'a'}, {0x1f300, 0x1f3ff}, {0x1f400, 0x1f600}}))
+	// BMPとアストラルにまたがる範囲は両方に分ける
+	assert.Equal(t, []charRange{{0xd800, 0xd801}, {0xfff0, 0xffff}}, firstUnits([]charRange{{0xfff0, 0x10400}}))
+
+	for _, bad := range []string{`a?`, `a|b|c`, `a*`, `\ud83d`} {
+		_, err := generateTS(regexSource{version: "0", source: bad})
+		assert.Error(t, err, bad)
+	}
 }
 
 func TestSnapshotRoundTrip(t *testing.T) {
@@ -236,7 +271,8 @@ func TestRun_WritesThenChecks(t *testing.T) {
 	dir := t.TempDir()
 	out := filepath.Join(dir, "gen.go")
 	snap := filepath.Join(dir, "source.txt")
-	args := []string{"-node-modules", root, "-out", out, "-snapshot", snap}
+	tsOut := filepath.Join(dir, "gen.ts")
+	args := []string{"-node-modules", root, "-out", out, "-ts-out", tsOut, "-snapshot", snap}
 
 	var stdout, stderr bytes.Buffer
 	require.NoError(t, run(args, &stdout, &stderr))
@@ -246,6 +282,11 @@ func TestRun_WritesThenChecks(t *testing.T) {
 	want, err := os.ReadFile(generatedPath)
 	require.NoError(t, err)
 	assert.True(t, bytes.Equal(want, got), "generating from the installed package must give the committed file")
+	gotTS, err := os.ReadFile(tsOut)
+	require.NoError(t, err)
+	wantTS, err := os.ReadFile(generatedTSPath)
+	require.NoError(t, err)
+	assert.True(t, bytes.Equal(wantTS, gotTS), "generating from the installed package must give the committed TypeScript file")
 	gotSnap, err := os.ReadFile(snap)
 	require.NoError(t, err)
 	assert.Equal(t, src.snapshot(), gotSnap)
@@ -254,8 +295,8 @@ func TestRun_WritesThenChecks(t *testing.T) {
 	require.NoError(t, run(append(args, "-check"), &stdout, &stderr))
 	assert.Contains(t, stdout.String(), "up to date")
 
-	// 生成物かsnapshotのどちらかがずれていたら落とす
-	for _, path := range []string{out, snap} {
+	// 生成物かsnapshotのどれかがずれていたら落とす
+	for _, path := range []string{out, tsOut, snap} {
 		orig, err := os.ReadFile(path)
 		require.NoError(t, err)
 		require.NoError(t, os.WriteFile(path, append(orig, '\n'), 0o644))
@@ -266,7 +307,7 @@ func TestRun_WritesThenChecks(t *testing.T) {
 	}
 	// mfm-jsだけを上げても(正規表現が同じでも)落とす
 	bumped := fakeMisskey(t, "0.99.0", src.source, src.version, src.version, mfmjsBundleExcerpt)
-	err = run([]string{"-node-modules", bumped, "-out", out, "-snapshot", snap, "-check"}, &stdout, &stderr)
+	err = run([]string{"-node-modules", bumped, "-out", out, "-ts-out", tsOut, "-snapshot", snap, "-check"}, &stdout, &stderr)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "stale")
 
@@ -277,7 +318,7 @@ func TestRun_WritesThenChecks(t *testing.T) {
 func TestRun_FailsOnBrokenInstall(t *testing.T) {
 	src := readSnapshot(t)
 	dir := t.TempDir()
-	out := []string{"-out", filepath.Join(dir, "gen.go"), "-snapshot", filepath.Join(dir, "source.txt")}
+	out := []string{"-out", filepath.Join(dir, "gen.go"), "-ts-out", filepath.Join(dir, "gen.ts"), "-snapshot", filepath.Join(dir, "source.txt")}
 	cases := map[string]string{
 		"no mfm-js":            t.TempDir(),
 		"no emoji-data dep":    fakeMisskey(t, src.mfmjs, src.source, "", src.version, mfmjsBundleExcerpt),
@@ -296,7 +337,8 @@ func TestRun_FailsOnBrokenInstall(t *testing.T) {
 	// 書き込めない出力先
 	root := fakeMisskey(t, src.mfmjs, src.source, src.version, src.version, mfmjsBundleExcerpt)
 	assert.Error(t, run([]string{"-node-modules", root, "-out", filepath.Join(dir, "missing", "gen.go")}, &stdout, &stderr))
-	assert.Error(t, run([]string{"-node-modules", root, "-out", filepath.Join(dir, "gen.go"), "-snapshot", filepath.Join(dir, "missing", "s.txt")}, &stdout, &stderr))
+	assert.Error(t, run([]string{"-node-modules", root, "-out", filepath.Join(dir, "gen.go"), "-ts-out", filepath.Join(dir, "missing", "gen.ts")}, &stdout, &stderr))
+	assert.Error(t, run([]string{"-node-modules", root, "-out", filepath.Join(dir, "gen.go"), "-ts-out", filepath.Join(dir, "gen.ts"), "-snapshot", filepath.Join(dir, "missing", "s.txt")}, &stdout, &stderr))
 
 	// package.jsonがJSONでない
 	broken := fakeMisskey(t, src.mfmjs, src.source, src.version, src.version, mfmjsBundleExcerpt)
@@ -330,7 +372,7 @@ func fakeNpm(t *testing.T, src regexSource) string {
 func TestRun_FindsEmojiDataInEveryLayout(t *testing.T) {
 	src := readSnapshot(t)
 	dir := t.TempDir()
-	out := []string{"-out", filepath.Join(dir, "gen.go"), "-snapshot", filepath.Join(dir, "source.txt")}
+	out := []string{"-out", filepath.Join(dir, "gen.go"), "-ts-out", filepath.Join(dir, "gen.ts"), "-snapshot", filepath.Join(dir, "source.txt")}
 	var stdout, stderr bytes.Buffer
 
 	npm := fakeNpm(t, src)

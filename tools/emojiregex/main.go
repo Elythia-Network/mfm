@@ -1,10 +1,13 @@
 // Command emojiregex generates the Unicode emoji pattern of the Go MFM parser
-// (emoji_regex_gen.go at the repository root) from the emoji regex of
-// @misskey-dev/emoji-data, the one mfm-js uses for its unicodeEmoji parser.
+// (emoji_regex_gen.go at the repository root) and of the TypeScript port
+// (ts/src/emoji-regex.gen.ts) from the emoji regex of @misskey-dev/emoji-data,
+// the one mfm-js uses for its unicodeEmoji parser.
 //
-// The JavaScript regex works on UTF-16 code units; the generated pattern is the
-// same regex over code points for Go's regexp package. Both pick the first
-// matching alternative from the left, so they read the same emoji.
+// The JavaScript regex works on UTF-16 code units; the generated Go pattern is
+// the same regex over code points for Go's regexp package. Both pick the first
+// matching alternative from the left, so they read the same emoji. The
+// TypeScript module keeps the JavaScript regex as it is and adds the code units
+// a match can start with.
 //
 // Usage (from tools/, after `npm ci` there):
 //
@@ -40,6 +43,7 @@ import (
 const (
 	defaultNodeModules = "node_modules"
 	defaultOut         = "../emoji_regex_gen.go"
+	defaultTSOut       = "../ts/src/emoji-regex.gen.ts"
 	defaultSnapshot    = "emojiregex/testdata/source.txt"
 )
 
@@ -56,6 +60,7 @@ func run(args []string, out, errOut io.Writer) error {
 	nodeModules := fs.String("node-modules", envOr("MFM_NODE_MODULES", defaultNodeModules), "node_modules directory holding mfm-js (env MFM_NODE_MODULES)")
 	emojiData := fs.String("emoji-data", os.Getenv("MFM_EMOJI_DATA"), "@misskey-dev/emoji-data package directory; default: found from mfm-js (env MFM_EMOJI_DATA)")
 	outPath := fs.String("out", defaultOut, "generated Go file")
+	tsOutPath := fs.String("ts-out", defaultTSOut, "generated TypeScript file")
 	snapshotPath := fs.String("snapshot", defaultSnapshot, "snapshot of the regex source")
 	check := fs.Bool("check", false, "compare instead of writing; fail when the outputs are stale")
 	if err := fs.Parse(args); err != nil {
@@ -73,12 +78,17 @@ func run(args []string, out, errOut io.Writer) error {
 	if err != nil {
 		return err
 	}
+	genTS, err := generateTS(src)
+	if err != nil {
+		return err
+	}
 	snap := src.snapshot()
+	files := []struct {
+		path string
+		want []byte
+	}{{*outPath, gen}, {*tsOutPath, genTS}, {*snapshotPath, snap}}
 	if *check {
-		for _, f := range []struct {
-			path string
-			want []byte
-		}{{*outPath, gen}, {*snapshotPath, snap}} {
+		for _, f := range files {
 			got, err := os.ReadFile(f.path)
 			if err != nil {
 				return err
@@ -90,13 +100,12 @@ func run(args []string, out, errOut io.Writer) error {
 		fmt.Fprintf(out, "emoji regex is up to date (mfm-js %s, emoji-data %s)\n", src.mfmjs, src.version)
 		return nil
 	}
-	if err := os.WriteFile(*outPath, gen, 0o644); err != nil {
-		return err
+	for _, f := range files {
+		if err := os.WriteFile(f.path, f.want, 0o644); err != nil {
+			return err
+		}
 	}
-	if err := os.WriteFile(*snapshotPath, snap, 0o644); err != nil {
-		return err
-	}
-	fmt.Fprintf(out, "wrote %s and %s (mfm-js %s, emoji-data %s)\n", *outPath, *snapshotPath, src.mfmjs, src.version)
+	fmt.Fprintf(out, "wrote %s, %s and %s (mfm-js %s, emoji-data %s)\n", *outPath, *tsOutPath, *snapshotPath, src.mfmjs, src.version)
 	return nil
 }
 
