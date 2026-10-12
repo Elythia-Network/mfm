@@ -1,0 +1,99 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  go:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+      - name: gofmt
+        run: |
+          out="$(gofmt -s -l .)"
+          if [ -n "$out" ]; then
+            echo "gofmt -s needed:"
+            echo "$out"
+            exit 1
+          fi
+      - name: go vet
+        run: go vet ./...
+      - name: go test
+        # 時間の比を見るテストは-raceの下では飛ばし、下の素のビルドで回す
+        run: go test -race -count=1 -covermode=atomic -coverprofile=cover.out ./...
+      - name: coverage >= 90%
+        run: |
+          total="$(go tool cover -func=cover.out | awk '/^total:/ { sub("%", "", $3); print $3 }')"
+          echo "coverage: ${total}%"
+          awk -v t="$total" 'BEGIN { exit !(t >= 90) }'
+      - name: timing test
+        run: go test -count=1 -run '^TestParse_TimeGrowsLinearly$' -v .
+      - name: fuzz
+        # 新しい入力の最小化は既定で1件60秒かかり、その間は探索が止まるので短くする
+        run: go test -run '^$' -fuzz=FuzzParse -fuzztime=30s -fuzzminimizetime=5s .
+      - name: upload failing fuzz inputs
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: fuzz-failures
+          path: testdata/fuzz/
+          if-no-files-found: ignore
+
+  tools:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: tools
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: tools/go.mod
+          cache-dependency-path: tools/go.sum
+      - name: gofmt
+        run: test -z "$(gofmt -s -l .)"
+      - name: go vet
+        run: go vet ./...
+      - name: go test
+        run: go test -race -count=1 ./...
+
+  testdata:
+    # testdata/と生成した絵文字の正規表現が、固定したmfm-js / emoji-dataの出力と
+    # 一致しているかを見る
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: tools
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: tools/go.mod
+          cache-dependency-path: tools/go.sum
+      - run: npm ci --no-audit --no-fund
+      - name: testdata is fresh
+        run: node gen-testdata/gen.mjs --check
+      - name: emoji regex is fresh
+        run: go run ./emojiregex -check
