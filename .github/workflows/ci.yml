@@ -75,8 +75,8 @@ jobs:
         run: go test -race -count=1 ./...
 
   testdata:
-    # testdata/と生成した絵文字の正規表現が、固定したmfm-js / emoji-dataの出力と
-    # 一致しているかを見る
+    # testdata/と生成した絵文字の正規表現(Go版とTS版)が、固定したmfm-js / emoji-dataの
+    # 出力と一致しているかを見る
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -97,3 +97,42 @@ jobs:
         run: node gen-testdata/gen.mjs --check
       - name: emoji regex is fresh
         run: go run ./emojiregex -check
+
+  ts:
+    # TS版の型検査・テスト・ビルド。テストはtools/のmfm-js 0.26.0と突き合わせるので、
+    # tools/の依存も入れる。生成した絵文字の正規表現の鮮度はtestdata jobが見る
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # package.jsonのengines (node >= 20)の下限と、今のLTS
+        node: [20, 22, 24]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ matrix.node }}
+      - name: npm ci (tools)
+        working-directory: tools
+        run: npm ci --no-audit --no-fund
+      - name: npm ci (ts)
+        working-directory: ts
+        run: npm ci --no-audit --no-fund
+      - name: typecheck
+        # 公開する型がmfm-jsの型と同じかもここで見る (test/api.test.ts)
+        working-directory: ts
+        run: npm run typecheck
+      - name: test
+        working-directory: ts
+        run: npm test
+      - name: build
+        working-directory: ts
+        run: npm run build
+      - name: package contents
+        # 公開するファイルの一覧を期待する一覧と比べる
+        working-directory: ts
+        run: |
+          node scripts/copy-notices.mjs
+          node scripts/check-pack.mjs

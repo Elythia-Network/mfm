@@ -1,0 +1,88 @@
+name: publish-ts
+
+# ts-v<version>のtagをpushすると、ts/をテストしてnpmへ公開する
+on:
+  push:
+    tags: ['ts-v*']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-ts
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # provenanceとnpmのtrusted publishing (OIDC)に要る
+      id-token: write
+    defaults:
+      run:
+        working-directory: ts
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          # mainに含まれるかを確かめるため、全てのブランチを履歴ごと取る
+          fetch-depth: 0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          # trusted publishingはnpm 11.5.1以降が要るので、npm 11を同梱するNode.js 24を使う
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+      - name: tag matches the package version
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          version="$(node -p "require('./package.json').version")"
+          if [ "$TAG" != "ts-v$version" ]; then
+            echo "tag $TAG does not match ts/package.json version $version"
+            exit 1
+          fi
+      - name: tagged commit is on main
+        # mainに入っていないcommit (レビュー前のブランチなど)から公開しない
+        env:
+          SHA: ${{ github.sha }}
+        # fetch-depth: 0で全てのブランチを取ってあるので、origin/mainをそのまま使う。
+        # 無ければ確かめられないので落とす
+        run: |
+          if ! git rev-parse --verify --quiet refs/remotes/origin/main >/dev/null; then
+            echo "origin/main is missing from the checkout"
+            exit 1
+          fi
+          if ! git merge-base --is-ancestor "$SHA" origin/main; then
+            echo "$SHA is not contained in origin/main"
+            exit 1
+          fi
+      - name: npm supports trusted publishing
+        run: |
+          version="$(npm --version)"
+          echo "npm $version"
+          node -e 'const [a, b, c] = process.argv[1].split(".").map(Number); process.exit(a > 11 || (a === 11 && (b > 5 || (b === 5 && c >= 1))) ? 0 : 1)' "$version" || {
+            echo "npm 11.5.1 or later is required"
+            exit 1
+          }
+      - name: npm ci (tools)
+        working-directory: tools
+        run: npm ci --no-audit --no-fund --ignore-scripts
+      - run: npm ci --no-audit --no-fund --ignore-scripts
+      - run: npm run typecheck
+      - name: test
+        # 時間を測るテストは負荷で揺れるので、公開ではci.ymlに任せて飛ばす
+        env:
+          MFM_SKIP_TIMING: '1'
+        run: npm test
+      - name: package contents
+        run: |
+          npm run build
+          node scripts/copy-notices.mjs
+          node scripts/check-pack.mjs
+      - name: publish
+        # trusted publishingが設定されていればOIDCで、無ければNPM_TOKENで認証する。
+        # ビルドとLICENSEの写しはprepackが行う
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm publish --provenance --access public
